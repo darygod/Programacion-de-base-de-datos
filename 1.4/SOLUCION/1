@@ -1,0 +1,86 @@
+SET SERVEROUT ON;
+
+declare 
+V_MAX_ID EMPLEADO.id_emp%type;
+V_Min_ID EMPLEADO.id_emp%type;
+
+v_id_emp    number(3);
+v_num_run   number(9);
+v_dv_run    varchar2(1);
+v_nombre_emp   varchar2(100);
+v_nom_cumna_emp varchar2(100);
+v_sueldo_base_emp number(9); 
+v_id_comuna     number(9);
+
+v_porcen_aumento   number(9);
+v_valor_normal     number(9);
+v_valor_extra       number(9);
+v_valor_total_movil number(9);
+
+begin 
+
+SELECT
+    max(id_emp),
+    min(id_emp)
+    into 
+    V_MAX_ID,V_MIN_ID
+FROM
+    empleado;
+    
+LOOP
+        SELECT
+         
+            e.id_emp,
+            e.NUMRUN_EMP,
+            e.DVRUN_EMP,
+            e.PNOMBRE_EMP||' '||e.SNOMBRE_EMP ||' '||e.APPATERNO_EMP||' '|| e.APMATERNO_EMP,
+            c.NOMBRE_COMUNA,
+            e.SUELDO_BASE,
+            c.id_comuna
+        into v_id_emp,v_num_run,v_dv_run,v_nombre_emp,v_nom_cumna_emp,v_sueldo_base_emp,v_id_comuna
+        FROM
+            empleado e
+        INNER JOIN comuna c on  e.ID_COMUNA= c.ID_COMUNA
+        where v_min_id=e.ID_EMP;
+    
+        v_porcen_aumento:=trunc(v_sueldo_base_emp/100000);
+        v_valor_normal:= round(v_sueldo_base_emp*v_porcen_aumento/100);
+        v_valor_extra:= case v_id_comuna
+        
+                            WHEN 117 THEN 20000
+                            WHEN 118 THEN 25000
+                            WHEN 119 THEN 30000
+                            WHEN 120 THEN 35000
+                            WHEN 121 THEN 40000
+                            ELSE 0
+                        END;
+        v_valor_total_movil:=v_valor_normal+v_valor_extra;
+        
+        
+        insert into PROY_MOVILIZACION values(
+                TO_CHAR(SYSDATE, 'YYYY'),
+                v_id_emp,  
+                v_num_run,
+                v_dv_run,    
+                v_nombre_emp, 
+                v_nom_cumna_emp, 
+                v_sueldo_base_emp, 
+                v_porcen_aumento,   
+                v_valor_normal,     
+                v_valor_extra,      
+                v_valor_total_movil);  
+        
+    
+        v_min_id:= v_min_id+10;
+EXIT WHEN v_min_id > v_max_id;
+END LOOP;
+
+COMMIT;
+
+    
+    
+    
+    
+ 
+
+end;
