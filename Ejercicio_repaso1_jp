@@ -1,0 +1,166 @@
+drop sequence SQ_ERROR;
+create sequence SQ_ERROR start WITH 1 increment by 1;
+
+-- espacio para desarrollar el trigger 
+create or replace trigger trg_punto_mes_huesped 
+    after insert on DETALLE_DIARIO_HUESPEDES
+    for each row
+declare 
+    v_monto_puntos number;
+    
+begin
+    
+    
+    v_monto_puntos:=trunc(:new.TOTAL/100000)*150;
+    
+    insert into PUNTOS_MES_HUESPED values (:NEW.ID_HUESPED,:NEW.NOMBRE,:new.TOTAL,v_monto_puntos);
+end;
+        
+
+--package 
+
+create or replace PACKAGE pkg_cobranza_hotel is 
+    FUNCTION FN_AGENCIA_CLIENTE (P_ID_AGENCIA NUMBER,P_ID_CLIENTE NUMBER) RETURN VARCHAR2;
+    FUNCTION FN_CONSUMO_DOLAR_CLIENTE (P_ID_HUESPED NUMBER ) RETURN NUMBER;
+    PROCEDURE sp_proceso_husped (p_fecha varchar2, p_valor_dolar number);
+end pkg_cobranza_hotel;
+/
+create or replace PACKAGE BODY pkg_cobranza_hotel is 
+
+      FUNCTION FN_AGENCIA_CLIENTE (P_ID_AGENCIA NUMBER, P_ID_CLIENTE NUMBER) RETURN VARCHAR2 is
+        v_msg varchar2(100);
+          v_nombre varchar2(100);
+          begin 
+              SELECT
+                    nom_agencia
+                into 
+                    v_nombre
+                FROM
+                    agencia
+                where ID_AGENCIA=P_ID_AGENCIA;
+                return v_nombre;
+            exception
+             when no_data_found then
+                v_msg:= sqlerrm||': No se ha encontrado ningun dato';
+                v_nombre:='no registra agencia';
+                insert into reg_errores values (SQ_ERROR.nextval, 'erroe en la funcion FN AGENCIA al recuperar la agencia del cliente con id '||P_ID_CLIENTE,v_msg);
+                return v_nombre;
+          end FN_AGENCIA_CLIENTE;
+          
+           FUNCTION FN_CONSUMO_DOLAR_CLIENTE (P_ID_HUESPED NUMBER ) RETURN NUMBER is
+            V_consumo NUMBER;
+             v_msg varchar2(100);
+           begin
+                SELECT MONTO_CONSUMOS
+                INTO V_consumo
+                FROM total_consumos
+                where ID_HUESPED = P_ID_HUESPED;
+                RETURN V_consumo;
+           exception 
+            when OTHERS then 
+                v_msg:= sqlerrm || ': No se ha encontrado ningun dato';
+                V_consumo:=0;
+                insert into  reg_errores values (SQ_ERROR.nextval, 'erroe en la funcion FN CONSUMOS al recuperar los consumos del cliente con id '|| P_ID_HUESPED,v_msg );
+                return V_consumo;
+           end FN_CONSUMO_DOLAR_CLIENTE;
+           
+           
+          
+          PROCEDURE sp_proceso_husped (p_fecha varchar2, p_valor_dolar number) is 
+                CURSOR C_HOTEL IS 
+                    SELECT 
+                           h.ID_HUESPED, h.id_agencia,
+                           h.APPAT_HUESPED ||' ' ||h.APMAT_HUESPED ||' '||  h.NOM_HUESPED as nombre_cli,
+                           SUM(ha.valor_habitacion + ha.valor_minibar) * r.estadia aloja
+                    FROM 
+                            reserva r
+                    inner join huesped h on h.ID_HUESPED=r.ID_HUESPED
+                    inner JOIN detalle_reserva dr ON dr.id_reserva = r.id_reserva
+                    inner JOIN habitacion ha ON ha.id_habitacion = dr.id_habitacion
+                    WHERE TO_CHAR( r.INGRESO+r.ESTADIA, 'MM/YYYY') = p_fecha
+                    GROUP BY h.id_huesped, h.nom_huesped,h.appat_huesped,h.apmat_huesped,
+                            r.estadia, h.id_agencia
+                    order by h.appat_huesped;    
+                    
+                    r_detalle_diario_huespedes  DETALLE_DIARIO_HUESPEDES%rowtype;
+                    
+                    v_consumo number;
+                    v_por_des_consumo number;
+                    v_valor_tour number;
+                    
+            begin 
+            
+                execute immediate 'truncate table REG_ERRORES';
+                execute immediate 'truncate table DETALLE_DIARIO_HUESPEDES';
+                
+                for rc_hotel in C_HOTEL loop
+                    
+                    v_consumo:=FN_CONSUMO_DOLAR_CLIENTE(rc_hotel.ID_HUESPED);
+                    
+                    select PCT
+                    into v_por_des_consumo
+                    from TRAMOS_CONSUMOS
+                    where v_consumo BETWEEN VMIN_TRAMO and VMAX_TRAMO;
+                    
+                    select
+                         nvl(sum(h.NUM_PERSONAS*t.VALOR_TOUR),0)
+                    into v_valor_tour
+                    from HUESPED_TOUR h
+                    inner join TOUR t on t.ID_TOUR =h.ID_TOUR
+                    where ID_HUESPED=rc_hotel.ID_HUESPED;
+                                          
+                    
+                   
+                                      
+                    
+                    
+                
+                    r_detalle_diario_huespedes.ID_HUESPED:= rc_hotel.ID_HUESPED;
+                    r_detalle_diario_huespedes.NOMBRE:= rc_hotel.nombre_cli;
+                    r_detalle_diario_huespedes.AGENCIA:= FN_AGENCIA_CLIENTE(rc_hotel.id_agencia,rc_hotel.ID_HUESPED);
+                    r_detalle_diario_huespedes.ALOJAMIENTO:= rc_hotel.aloja*p_valor_dolar;
+                    r_detalle_diario_huespedes.CONSUMOS:= (v_consumo-round(v_por_des_consumo*v_consumo))*p_valor_dolar;
+                    r_detalle_diario_huespedes.TOURS:= v_valor_tour*p_valor_dolar;
+                    r_detalle_diario_huespedes.SUBTOTAL_PAGO:=r_detalle_diario_huespedes.ALOJAMIENTO+r_detalle_diario_huespedes.CONSUMOS+r_detalle_diario_huespedes.TOURS;
+                    r_detalle_diario_huespedes.DESCUENTO_CONSUMOS:= round(v_por_des_consumo*v_consumo)*p_valor_dolar;
+                     if rc_hotel.id_agencia=1 then 
+                        r_detalle_diario_huespedes.DESCUENTOS_AGENCIA:= round(r_detalle_diario_huespedes.SUBTOTAL_PAGO*0.2);
+                    ELSIF rc_hotel.id_agencia=4 THEN 
+                        r_detalle_diario_huespedes.DESCUENTOS_AGENCIA:= round(r_detalle_diario_huespedes.SUBTOTAL_PAGO*0.1);
+                    ELSE 
+                        r_detalle_diario_huespedes.DESCUENTOS_AGENCIA:= 0;
+                     end if;
+                    r_detalle_diario_huespedes.TOTAL:=r_detalle_diario_huespedes.SUBTOTAL_PAGO-r_detalle_diario_huespedes.DESCUENTO_CONSUMOS-r_detalle_diario_huespedes.DESCUENTOS_AGENCIA;
+                    INSERT INTO DETALLE_DIARIO_HUESPEDES VALUES (  r_detalle_diario_huespedes.ID_HUESPED,
+                r_detalle_diario_huespedes.NOMBRE,
+                r_detalle_diario_huespedes.AGENCIA,
+                r_detalle_diario_huespedes.ALOJAMIENTO,
+                r_detalle_diario_huespedes.CONSUMOS,
+                r_detalle_diario_huespedes.TOURS,
+                r_detalle_diario_huespedes.SUBTOTAL_PAGO,
+                r_detalle_diario_huespedes.DESCUENTO_CONSUMOS,
+                r_detalle_diario_huespedes.DESCUENTOS_AGENCIA,
+                r_detalle_diario_huespedes.TOTAL);
+                end loop;
+                        
+                
+        
+        end sp_proceso_husped;
+
+
+end pkg_cobranza_hotel;
+/
+
+
+
+
+begin
+        pkg_cobranza_hotel.sp_proceso_husped('08/2023', 840);
+end;
+
+
+
+truncate table REG_ERRORES;
+truncate table DETALLE_DIARIO_HUESPEDES;
+DROP PACKAGE pkg_cobranza_hotel;
+   
