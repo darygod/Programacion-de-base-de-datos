@@ -1,0 +1,107 @@
+DROP SEQUENCE SEQ_REG_ERROR;
+DROP SEQUENCE SEQ_AUDIT;
+
+create sequence SEQ_REG_ERROR START WITH 100 INCREMENT BY 1;
+create sequence SEQ_AUDIT;
+
+create or replace trigger TRG_MOVPROD 
+    BEFORE insert on PRODUCTO_TIENDA
+    for each row 
+    declare
+        V_NOM_PRODUCTO varchar2(200);
+    begin 
+        V_NOM_PRODUCTO:= PKG_CALCULO_TIENDA.FN_NOM_PRODUCTO(:NEW.ID_PROD);
+        insert into  MOVIMIENTO_PRODUCTO 
+        values ( SEQ_AUDIT.nextval, :new.IDSUC, :new.ID_PROD,  'SE HA INSERTADO EL PRODUCTO: '||V_NOM_PRODUCTO);    
+end;
+
+CREATE OR REPLACE PACKAGE PKG_CALCULO_TIENDA IS
+
+    PROCEDURE SP_ACTUALIZAR_STOCK;
+    FUNCTION FN_NOM_PRODUCTO (P_ID_PRODUCTO NUMBER) RETURN VARCHAR2;
+    FUNCTION FN_NOM_TIENDA(P_ID_SUC NUMBER) RETURN VARCHAR2
+    END;
+/
+CREATE OR REPLACE PACKAGE BODY PKG_CALCULO_TIENDA IS
+    -- Función para obtener el nombre del producto
+    FUNCTION FN_NOM_PRODUCTO(P_ID_PRODUCTO NUMBER) RETURN VARCHAR2 IS
+        V_NOMBRE VARCHAR2(200);
+    BEGIN
+        SELECT NOM_PROD
+        INTO V_NOMBRE
+        FROM PRODUCTO
+        WHERE ID_PROD = P_ID_PRODUCTO;
+        RETURN V_NOMBRE;
+    END FN_NOM_PRODUCTO;
+
+    -- Función para obtener el nombre de la tienda (sucursal)
+    FUNCTION FN_NOM_TIENDA(P_ID_SUC NUMBER) RETURN VARCHAR2 IS
+        V_NOMBRE VARCHAR2(200);
+    BEGIN
+        SELECT NOMSUC
+        INTO V_NOMBRE
+        FROM SUCURSAL
+        WHERE IDSUC = P_ID_SUC;
+        RETURN V_NOMBRE;
+    END FN_NOM_TIENDA;
+
+    -- Procedimiento para actualizar el stock de productos en tiendas
+ PROCEDURE SP_ACTUALIZAR_STOCK IS
+
+        CURSOR c_productos_detalle IS
+        SELECT g.IDSUC, d.ID_PROD, d.CANTIDAD
+        FROM GUIA_DESPACHO g
+        INNER JOIN DETALLE d ON g.NUM_GUIA = d.NUM_GUIA;
+
+        CURSOR c_productos_tienda IS
+        SELECT * FROM PRODUCTO_TIENDA;
+
+        v_count NUMBER;
+        v_idsuc number;
+        v_idpro number;
+
+    BEGIN
+
+        FOR rc_productos_detalle IN c_productos_detalle LOOP
+            -- Verificar si el registro existe
+            SELECT COUNT(*)
+            INTO v_count
+            FROM PRODUCTO_TIENDA
+            WHERE IDSUC = rc_productos_detalle.IDSUC
+            AND ID_PROD = rc_productos_detalle.ID_PROD;
+            --alternativa
+           
+            IF v_count > 0 THEN
+                -- Si existe, actualizar el stock
+                UPDATE PRODUCTO_TIENDA
+                SET STOCK = STOCK + rc_productos_detalle.CANTIDAD
+                WHERE IDSUC = rc_productos_detalle.IDSUC
+                AND ID_PROD = rc_productos_detalle.ID_PROD;
+            ELSE
+                -- Si no existe, insertar un nuevo registro
+                INSERT INTO PRODUCTO_TIENDA (IDSUC, ID_PROD, STOCK)
+                VALUES (rc_productos_detalle.IDSUC, rc_productos_detalle.ID_PROD, rc_productos_detalle.CANTIDAD);
+                
+                 INSERT INTO REG_ERROR 
+                 values (SEQ_REG_ERROR.nextval,'SP ACTRUALIZAR STOCK: PRODUCTO NO EXISTIA EN TIENDA . PRODUCTO INSERTADO');
+                 
+            END IF;
+        END LOOP;
+
+        -- Marcar las guías de despacho como recibidas
+        UPDATE GUIA_DESPACHO
+        SET RECEPCION = 1
+        WHERE RECEPCION = 0;
+        
+        
+
+    END;
+END PKG_CALCULO_TIENDA;
+/
+
+begin 
+    pkg_calculo_tienda.SP_ACTUALIZAR_STOCK;
+end;
+    
+    truncate table GUIA_DESPACHO;
+    drop PACKAGE PKG_CALCULO_TIENDA;
